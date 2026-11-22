@@ -13,6 +13,18 @@
 !.env.example
 *.local
 
+# Credentials and private keys
+/credentials/
+/secrets/
+*service-account*.json
+*service_account*.json
+google-credentials*.json
+credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
 # Logs
 logs
 *.log

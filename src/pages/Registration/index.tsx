@@ -1,4 +1,4 @@
-import { JoinCommunityPage } from "@/pages/Registration/JoinCommunityPage"
+import JoinCommunityPage from "@/pages/Registration/JoinCommunityPage"
 import MembershipGuidelinesPage from "@/pages/Registration/MembershipGuidelinesPage"
 
 function RegistrationPage({

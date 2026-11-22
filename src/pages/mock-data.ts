@@ -114,13 +114,6 @@ export const projects = [
   },
 ]
 
-export const team = [
-  { name: "Jordan Lee", role: "Community Lead", initials: "JL", color: "bg-sky-100 text-sky-700" },
-  { name: "Sam Rivera", role: "Events Coordinator", initials: "SR", color: "bg-violet-100 text-violet-700" },
-  { name: "Taylor Chen", role: "Projects Coordinator", initials: "TC", color: "bg-amber-100 text-amber-700" },
-  { name: "Morgan Patel", role: "Member Experience", initials: "MP", color: "bg-emerald-100 text-emerald-700" },
-]
-
 export const resources: {
   title: string
   category: string

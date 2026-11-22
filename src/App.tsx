@@ -1,5 +1,10 @@
 import { useState } from "react"
 import {
+  ChevronDown,
+  Menu as MenuIcon,
+  X as CloseIcon,
+} from "lucide-react"
+import {
   Menubar,
   MenubarContent,
   MenubarItem,
@@ -7,7 +12,6 @@ import {
   MenubarTrigger,
 } from "@/components/ui/menubar"
 import { Button } from "@/components/ui/button"
-import { ChevronDown, Menu as MenuIcon, X as CloseIcon } from "lucide-react"
 import logo from "@/assets/logo/a373d43f-61d3-4ecb-b6ae-4bef2e3d252f-removebg-preview.png"
 import HomePage from "@/pages/Home"
 import PagesRouter from "@/pages"
@@ -178,7 +182,7 @@ function App() {
         </div>
       </header>
       {page === "Home" ? (
-        <HomePage />
+        <HomePage onJoinClick={() => setPage("Join the Community")} />
       ) : (
         <PagesRouter
           page={page}
