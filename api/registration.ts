@@ -72,9 +72,15 @@ function getConfiguration() {
   const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n")
   const spreadsheetId =
     process.env.REGISTRATION_SHEET_ID || defaultSpreadsheetId
-  const folderId =
-    process.env.REGISTRATION_DRIVE_FOLDER_ID || defaultDriveFolderId
-  const tabName = process.env.REGISTRATION_SHEET_TAB || "Applications"
+  const isTestMode = process.env.REGISTRATION_TEST_MODE === "true"
+  const folderId = isTestMode
+    ? process.env.REGISTRATION_TEST_DRIVE_FOLDER_ID ||
+      process.env.REGISTRATION_DRIVE_FOLDER_ID ||
+      defaultDriveFolderId
+    : process.env.REGISTRATION_DRIVE_FOLDER_ID || defaultDriveFolderId
+  const tabName = isTestMode
+    ? process.env.REGISTRATION_TEST_SHEET_TAB || "Applications_Test"
+    : process.env.REGISTRATION_SHEET_TAB || "Applications"
   const allowedOrigin = process.env.REGISTRATION_ALLOWED_ORIGIN
   const turnstileSecret = process.env.TURNSTILE_SECRET_KEY
   const permitSecret = process.env.REGISTRATION_TOKEN_SECRET
@@ -101,6 +107,7 @@ function getConfiguration() {
     spreadsheetId,
     folderId,
     tabName,
+    isTestMode,
     allowedOrigin,
     turnstileSecret,
     permitSecret,
@@ -108,7 +115,11 @@ function getConfiguration() {
 }
 
 function requireRegistrationEnabled() {
-  if (process.env.REGISTRATION_ENABLED !== "true") {
+  if (process.env.REGISTRATION_TEST_MODE === "true") return
+  if (
+    process.env.REGISTRATION_ENABLED !== "true" ||
+    process.env.REGISTRATION_PRIVACY_NOTICE_APPROVED !== "true"
+  ) {
     throw new RequestError("Registration submissions are not open.", 503)
   }
 }
@@ -400,7 +411,7 @@ async function startUpload(body: Record<string, unknown>) {
   }
   validateUpload(kind, name, mimeType, size)
 
-  const { folderId } = getConfiguration()
+  const config = getConfiguration()
   const response = await googleFetch(
     "/upload/drive/v3/files?uploadType=resumable&fields=id%2Cname&supportsAllDrives=true",
     {
@@ -411,9 +422,9 @@ async function startUpload(body: Record<string, unknown>) {
         "X-Upload-Content-Length": String(size),
       },
       body: JSON.stringify({
-        name: name.replace(/[\r\n]/g, "_"),
+        name: `${config.isTestMode ? "TEST-" : ""}${name.replace(/[\r\n]/g, "_")}`,
         mimeType,
-        parents: [folderId],
+        parents: [config.folderId],
       }),
     }
   )
@@ -599,12 +610,33 @@ async function verifyUploadedFile(fileId: string, folderId: string) {
 }
 
 async function submitRegistration(body: Record<string, unknown>) {
+  const config = getConfiguration()
+  if (body.testMode !== config.isTestMode) {
+    throw new RequestError("The registration mode does not match the server.", 400)
+  }
   if (body.privacyConsent !== true) {
-    throw new RequestError("Privacy consent is required.", 400)
+    throw new RequestError(
+      config.isTestMode
+        ? "Test acknowledgement is required."
+        : "Privacy consent is required.",
+      400
+    )
+  }
+
+  const fullName = getText(body, "fullName", 200, true)
+  const personalEmail = getEmail(body, "personalEmail", true)
+  if (
+    config.isTestMode &&
+    (!/^TEST\b/i.test(fullName) ||
+      !personalEmail.toLowerCase().endsWith(".invalid"))
+  ) {
+    throw new RequestError(
+      "Test mode accepts only a full name starting with TEST and an email ending in .invalid.",
+      400
+    )
   }
 
   const files = getFileIds(body)
-  const config = getConfiguration()
   const uploadedFiles = await Promise.all(
     Object.values(files).map((fileId) => verifyUploadedFile(fileId, config.folderId))
   )
@@ -646,11 +678,11 @@ async function submitRegistration(body: Record<string, unknown>) {
   }
 
   const values = [
-    randomUUID(),
+    `${config.isTestMode ? "TEST-" : ""}${randomUUID()}`,
     new Date().toISOString(),
-    getText(body, "fullName", 200, true),
+    fullName,
     getText(body, "preferredName", 120),
-    getEmail(body, "personalEmail", true),
+    personalEmail,
     getEmail(body, "schoolEmail"),
     getText(body, "mobileNumber", 60, true),
     getHttpsUrl(body, "facebookLink", true),
@@ -679,7 +711,7 @@ async function submitRegistration(body: Record<string, unknown>) {
     files.cv,
     files.ovrf,
     files.letter,
-    "I agree",
+    config.isTestMode ? "TEST ACKNOWLEDGEMENT (FAKE DATA ONLY)" : "I agree",
     getText(body, "signature", 200, true),
     consentDate,
   ]

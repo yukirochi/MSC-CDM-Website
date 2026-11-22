@@ -340,10 +340,15 @@ function JoinCommunityPage() {
   const stepRefs = useRef<Array<HTMLDivElement | null>>([])
   const progressRef = useRef<HTMLDivElement | null>(null)
   const privacyNoticeUrl = getPrivacyNoticeUrl()
+  const privacyNoticeApproved =
+    import.meta.env.VITE_PRIVACY_NOTICE_APPROVED === "true"
   const turnstileSiteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY
+  const isTestMode = import.meta.env.VITE_REGISTRATION_TEST_MODE === "true"
   const registrationOpen =
-    import.meta.env.VITE_REGISTRATION_ENABLED === "true" &&
-    privacyNoticeUrl !== null &&
+    (isTestMode ||
+      (import.meta.env.VITE_REGISTRATION_ENABLED === "true" &&
+        privacyNoticeApproved &&
+        privacyNoticeUrl !== null)) &&
     Boolean(turnstileSiteKey)
 
   function moveToStep(step: number) {
@@ -565,7 +570,8 @@ function JoinCommunityPage() {
         committees: listValue("committees"),
         availability: listValue("availability"),
         membershipAgreements: listValue("membershipAgreements"),
-        privacyConsent: textValue("privacyConsent") === "I agree",
+        privacyConsent: textValue("privacyConsent") !== "",
+        testMode: isTestMode,
         signature: textValue("signature"),
         consentDate: textValue("consentDate"),
         files: fileIds,
@@ -650,14 +656,18 @@ function JoinCommunityPage() {
             <LockKeyhole aria-hidden="true" className="mt-0.5 size-5 shrink-0" />
             <div>
               <CardTitle className="text-sm">
-                {registrationOpen
-                  ? "Applications are open"
-                  : "Submissions are not open yet"}
+                {isTestMode
+                  ? "TEST MODE — use fake information only"
+                  : registrationOpen
+                    ? "Applications are open"
+                    : "Submissions are not open yet"}
               </CardTitle>
               <CardDescription className="mt-1 leading-5 text-amber-900">
-                {registrationOpen
-                  ? "Review the privacy notice before completing your application. Your application and documents are submitted securely."
-                  : "The approved privacy notice and secure submission/upload connection are not ready. This preview does not send or save entries or files, and the submit button is disabled."}
+                {isTestMode
+                  ? "Test submissions go to the separate Applications_Test tab. Use a name beginning with TEST and an email ending in .invalid. Do not enter real personal information or upload real documents."
+                  : registrationOpen
+                    ? "Review the privacy notice before completing your application. Your application and documents are submitted securely."
+                    : "The privacy consent below is sample text for layout testing only, not an approved notice. Do not enter real personal information; this preview does not send or save entries or files."}
               </CardDescription>
             </div>
           </CardContent>
@@ -734,7 +744,9 @@ function JoinCommunityPage() {
           )}
           {submissionSuccess && (
             <p role="status" className="rounded-md border border-green-300 bg-green-50 p-3 text-sm text-green-900">
-              Your application was submitted successfully.
+              {isTestMode
+                ? "Test submission recorded in the Applications_Test tab."
+                : "Your application was submitted successfully."}
             </p>
           )}
           {uploadStatus && (
@@ -1221,7 +1233,10 @@ function JoinCommunityPage() {
           >
             <div className="space-y-3 sm:col-span-2">
               <div className="rounded-lg border border-amber-300/70 bg-amber-50/70 p-4 text-sm leading-6 text-amber-950">
-                {registrationOpen && privacyNoticeUrl ? (
+                        {registrationOpen &&
+                        !isTestMode &&
+                        privacyNoticeUrl &&
+                        privacyNoticeApproved ? (
                   <>
                     Read the approved{" "}
                     <a
@@ -1235,12 +1250,35 @@ function JoinCommunityPage() {
                     before providing personal information and documents.
                   </>
                 ) : (
-                  <>
-                    The approved privacy notice is not ready yet. It will be
-                    shown here before applications can be submitted. Do not
-                    provide personal information or documents until the notice
-                    and secure submission process are available.
-                  </>
+                  <div className="space-y-3">
+                    <p className="font-semibold">
+                      {isTestMode
+                        ? "TEST MODE — SAMPLE NOTICE, NOT LEGAL CONSENT"
+                        : "SAMPLE PRIVACY NOTICE — DRAFT ONLY, NOT APPROVED"}
+                    </p>
+                    <p>
+                      For preview only: Microsoft Student Community – Colegio
+                      de Montalban would use the information and documents in
+                      this application to review membership requests and contact
+                      applicants. Access would be limited to authorized
+                      community organizers. Application records and uploaded
+                      documents are intended to be stored in restricted Google
+                      Sheets and Drive; Cloudflare Turnstile is used for
+                      automated-abuse prevention.
+                    </p>
+                    <p>
+                      Before collecting real applications, the organization
+                      must specify its approved retention period and privacy
+                      contact, and explain how applicants may request access,
+                      correction, withdrawal, or deletion of their information.
+                      Replace this sample with the organization-approved notice.
+                    </p>
+                    <p className="font-medium">
+                      {isTestMode
+                        ? "For this test only, use a full name starting with TEST, an email ending in .invalid, and dummy document files. Test data is written to the separate Applications_Test tab."
+                        : "Do not submit real personal information or documents while this sample notice is displayed."}
+                    </p>
+                  </div>
                 )}
               </div>
               <label
@@ -1253,13 +1291,15 @@ function JoinCommunityPage() {
                   id="privacyConsent"
                   type="checkbox"
                   name="privacyConsent"
-                  value="I agree"
+                  value={isTestMode ? "Test acknowledgement" : "I agree"}
                   required
                   disabled={!registrationOpen}
                   className="mt-0.5 size-4 shrink-0 accent-primary"
                 />
                 <span className="text-sm leading-5">
-                  I agree to the Data Privacy Consent.
+                  {isTestMode
+                    ? "I understand this is a test and I am using fake information and documents only."
+                    : "I have read the privacy notice and consent to the collection and use of my application information for membership review."}
                 </span>
               </label>
             </div>
@@ -1321,13 +1361,17 @@ function JoinCommunityPage() {
               !registrationOpen
                 ? "Submissions are not open yet"
                 : turnstileToken
-                  ? "Submit application"
+                  ? isTestMode
+                    ? "Submit test application"
+                    : "Submit application"
                   : "Complete security check"
             }
           />
           <p className="mt-3 text-sm text-muted-foreground">
-            {registrationOpen
-              ? "Your application and documents will be sent to the restricted registration records."
+            {isTestMode
+              ? "TEST MODE: entries are isolated from real applications. Use fake values and files only."
+              : registrationOpen
+                ? "Your application and documents will be sent to the restricted registration records."
               : "Nothing entered here is sent or saved. The form will be enabled after the approved privacy notice and secure submission endpoint are ready."}
           </p>
           </div>
