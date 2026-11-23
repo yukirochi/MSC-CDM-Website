@@ -36,8 +36,10 @@ Drive folder. Do not put applicant data in the public officers spreadsheet.
 The registration API creates an `Applications` tab and its header row if they
 are missing. If the tab already has a header row, it must exactly match the
 API's expected columns; submissions fail rather than writing into mismatched
-columns. Uploaded files remain private in the configured Drive folder, and the
-sheet stores their Drive file IDs.
+columns. Each submission gets a separate child folder inside the configured
+Drive folder. Uploaded files remain private, the sheet stores their Drive file
+IDs, and a clickable `Documents Folder Link` opens that submission's folder.
+Existing registration tabs are upgraded by adding the new link column.
 
 The Vercel API uses server-side OAuth. Enable the Google Sheets API and Google
 Drive API in the same Google Cloud project as the OAuth client. The account
@@ -105,9 +107,10 @@ For a controlled spreadsheet test, set both `REGISTRATION_TEST_MODE=true` and
 `VITE_REGISTRATION_TEST_MODE=true`, then redeploy. The test page asks for one
 message, a test acknowledgement, and one dummy PDF. It appends a synthetic row
 to the separate `Applications_Test` tab, saves the message in the `Motivation`
-column, uploads the PDF with a `TEST-` filename prefix, and saves its Drive file
-ID in the test row. Set `REGISTRATION_TEST_DRIVE_FOLDER_ID` to use a separate
-test folder; otherwise, the configured registration folder is used. Keep
+column, uploads the PDF with a `TEST-` filename prefix into its own restricted
+child folder, and saves the file ID and clickable folder link in the test row.
+Set `REGISTRATION_TEST_DRIVE_FOLDER_ID` to use a separate test parent folder;
+otherwise, the configured registration folder is used. Keep
 `REGISTRATION_ENABLED` and both notice-approval flags unset. Turnstile and the
 Google OAuth variables are still required. Remove test rows and files when
 finished, then turn off both test-mode variables.

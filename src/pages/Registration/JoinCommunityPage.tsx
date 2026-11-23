@@ -434,7 +434,8 @@ function JoinCommunityPage() {
   async function uploadFile(
     file: File,
     kind: UploadKey,
-    permit: string
+    permit: string,
+    folderId: string
   ): Promise<string> {
     const mimeType =
       file.type ||
@@ -447,6 +448,7 @@ function JoinCommunityPage() {
       name: file.name,
       mimeType,
       size: file.size,
+      folderId,
     }, permit)
     if (typeof session.uploadUrl !== "string") {
       throw new Error("The upload service did not create an upload session.")
@@ -481,6 +483,17 @@ function JoinCommunityPage() {
       }
     }
     throw new Error("The document upload did not complete.")
+  }
+
+  async function createSubmissionFolder(permit: string): Promise<string> {
+    const result = await postRegistrationRequest(
+      { action: "create-submission-folder" },
+      permit
+    )
+    if (typeof result.folderId !== "string") {
+      throw new Error("The service could not create a private application folder.")
+    }
+    return result.folderId
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -522,6 +535,7 @@ function JoinCommunityPage() {
 
     setIsSubmitting(true)
     const uploadedFileIds: string[] = []
+    let submissionFolderId = ""
     let permit = ""
     try {
       const verification = await postRegistrationRequest({
@@ -532,6 +546,8 @@ function JoinCommunityPage() {
         throw new Error("The security check could not be verified.")
       }
       permit = verification.permit
+      setUploadStatus("Creating a private application folder...")
+      submissionFolderId = await createSubmissionFolder(permit)
 
       if (isTestMode) {
         const testDocument = formData.get("testDocument")
@@ -539,7 +555,12 @@ function JoinCommunityPage() {
           throw new Error("Choose a dummy PDF document to test the Drive upload.")
         }
         setUploadStatus(`Uploading ${testDocument.name}...`)
-        const testFileId = await uploadFile(testDocument, "cv", permit)
+        const testFileId = await uploadFile(
+          testDocument,
+          "cv",
+          permit,
+          submissionFolderId
+        )
         uploadedFileIds.push(testFileId)
         setUploadStatus("Saving test message...")
         const result = await postRegistrationRequest(
@@ -548,6 +569,7 @@ function JoinCommunityPage() {
             testMode: true,
             testMessage: formData.get("testMessage")?.toString() ?? "",
             testFileId,
+            folderId: submissionFolderId,
             privacyConsent: true,
           },
           permit
@@ -578,7 +600,12 @@ function JoinCommunityPage() {
       const fileIds: Partial<Record<UploadKey, string>> = {}
       for (const [kind, file] of files) {
         setUploadStatus(`Uploading ${file.name}...`)
-        const fileId = await uploadFile(file, kind, permit)
+        const fileId = await uploadFile(
+          file,
+          kind,
+          permit,
+          submissionFolderId
+        )
         uploadedFileIds.push(fileId)
         fileIds[kind] = fileId
       }
@@ -617,6 +644,7 @@ function JoinCommunityPage() {
         committees: listValue("committees"),
         availability: listValue("availability"),
         membershipAgreements: listValue("membershipAgreements"),
+        folderId: submissionFolderId,
         privacyConsent: textValue("privacyConsent") !== "",
         testMode: isTestMode,
         signature: textValue("signature"),
@@ -641,15 +669,16 @@ function JoinCommunityPage() {
         error instanceof Error ? error.message : "The application could not be submitted."
       setSubmissionError(message)
       setUploadStatus("")
-      if (uploadedFileIds.length > 0) {
+      if (uploadedFileIds.length > 0 || submissionFolderId) {
         try {
           await postRegistrationRequest({
             action: "cleanup",
             fileIds: uploadedFileIds,
+            folderId: submissionFolderId,
           }, permit)
         } catch {
           setSubmissionError(
-            `${message} Some uploaded files may need to be removed from the restricted Drive folder manually.`
+            `${message} The temporary application folder or its files may need to be removed from Drive manually.`
           )
         }
       }

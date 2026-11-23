@@ -51,6 +51,7 @@ const registrationHeaders = [
   "Privacy Consent",
   "Signature",
   "Consent Date",
+  "Documents Folder Link",
 ]
 
 type UploadKind = "cv" | "ovrf" | "letter"
@@ -408,6 +409,8 @@ async function startUpload(body: Record<string, unknown>) {
   validateUpload(kind, name, mimeType, size)
 
   const config = getConfiguration()
+  const folderId = getText(body, "folderId", 256, true)
+  const submissionFolder = await verifySubmissionFolder(folderId, config.folderId)
   const response = await googleFetch(
     "/upload/drive/v3/files?uploadType=resumable&fields=id%2Cname&supportsAllDrives=true",
     {
@@ -420,7 +423,7 @@ async function startUpload(body: Record<string, unknown>) {
       body: JSON.stringify({
         name: `${config.isTestMode ? "TEST-" : ""}${name.replace(/[\r\n]/g, "_")}`,
         mimeType,
-        parents: [config.folderId],
+        parents: [submissionFolder.id],
       }),
     }
   )
@@ -437,6 +440,52 @@ async function startUpload(body: Record<string, unknown>) {
     throw new RequestError("Google returned an invalid upload session.", 502)
   }
   return { uploadUrl }
+}
+
+async function createSubmissionFolder() {
+  const config = getConfiguration()
+  const response = await googleFetch(
+    "/drive/v3/files?fields=id%2Cname&supportsAllDrives=true",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `${config.isTestMode ? "TEST-" : ""}Application-${randomUUID()}`,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [config.folderId],
+      }),
+    }
+  )
+  const folder = (await response.json()) as { id?: string }
+  if (!folder.id || !/^[\w-]{10,}$/.test(folder.id)) {
+    throw new RequestError("Google did not confirm the application folder.", 502)
+  }
+  return { folderId: folder.id }
+}
+
+async function verifySubmissionFolder(folderId: string, parentFolderId: string) {
+  if (!/^[\w-]{10,}$/.test(folderId)) {
+    throw new RequestError("The application folder is invalid.", 400)
+  }
+  const response = await googleFetch(
+    `/drive/v3/files/${encodeURIComponent(folderId)}?fields=id%2CmimeType%2Cparents&supportsAllDrives=true`
+  )
+  const folder = (await response.json()) as {
+    id?: string
+    mimeType?: string
+    parents?: string[]
+  }
+  if (
+    !folder.id ||
+    folder.mimeType !== "application/vnd.google-apps.folder" ||
+    !folder.parents?.includes(parentFolderId)
+  ) {
+    throw new RequestError(
+      "The application folder is not inside the configured registration folder.",
+      400
+    )
+  }
+  return folder
 }
 
 async function getDriveErrorReason(response: Response) {
@@ -581,13 +630,13 @@ function escapeSheetName(name: string) {
 
 async function ensureRegistrationTab() {
   const { spreadsheetId, tabName } = getConfiguration()
-  const spreadsheet = await googleFetch(
-    `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties.title`,
+  let spreadsheet = await googleFetch(
+    `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle)`,
     {},
     "sheets.googleapis.com"
   )
-  const metadata = (await spreadsheet.json()) as {
-    sheets?: Array<{ properties?: { title?: string } }>
+  let metadata = (await spreadsheet.json()) as {
+    sheets?: Array<{ properties?: { title?: string; sheetId?: number } }>
   }
   const hasTab = metadata.sheets?.some(
     (sheet) => sheet.properties?.title === tabName
@@ -605,6 +654,21 @@ async function ensureRegistrationTab() {
       },
       "sheets.googleapis.com"
     )
+    spreadsheet = await googleFetch(
+      `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle)`,
+      {},
+      "sheets.googleapis.com"
+    )
+    metadata = (await spreadsheet.json()) as {
+      sheets?: Array<{ properties?: { title?: string; sheetId?: number } }>
+    }
+  }
+
+  const sheetId = metadata.sheets?.find(
+    (sheet) => sheet.properties?.title === tabName
+  )?.properties?.sheetId
+  if (typeof sheetId !== "number") {
+    throw new RequestError("Google did not return the registration tab ID.", 502)
   }
 
   const quotedTab = escapeSheetName(tabName)
@@ -615,6 +679,7 @@ async function ensureRegistrationTab() {
   )
   const headerData = (await headerResponse.json()) as { values?: string[][] }
   const existingHeaders = headerData.values?.[0] ?? []
+  const previousHeaders = registrationHeaders.slice(0, -1)
 
   if (existingHeaders.length === 0) {
     await googleFetch(
@@ -627,6 +692,21 @@ async function ensureRegistrationTab() {
       "sheets.googleapis.com"
     )
   } else if (
+    existingHeaders.length === previousHeaders.length &&
+    existingHeaders.every((header, index) => header.trim() === previousHeaders[index])
+  ) {
+    await googleFetch(
+      `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(`${quotedTab}!AK1`)}?valueInputOption=RAW`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          values: [[registrationHeaders[registrationHeaders.length - 1]]],
+        }),
+      },
+      "sheets.googleapis.com"
+    )
+  } else if (
     existingHeaders.length !== registrationHeaders.length ||
     existingHeaders.some((header, index) => header.trim() !== registrationHeaders[index])
   ) {
@@ -635,32 +715,55 @@ async function ensureRegistrationTab() {
       409
     )
   }
-  return quotedTab
+  return { quotedTab, sheetId }
 }
 
 async function appendRegistrationRow(
   values: string[],
-  config: ReturnType<typeof getConfiguration>
+  config: ReturnType<typeof getConfiguration>,
+  folderId: string
 ) {
-  const quotedTab = await ensureRegistrationTab()
-  const response = await googleFetch(
-    `/v4/spreadsheets/${encodeURIComponent(config.spreadsheetId)}/values/${encodeURIComponent(`${quotedTab}!A:AJ`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+  const { sheetId } = await ensureRegistrationTab()
+  if (values.length !== registrationHeaders.length) {
+    throw new RequestError("The registration row has an invalid number of columns.", 500)
+  }
+  await googleFetch(
+    `/v4/spreadsheets/${encodeURIComponent(config.spreadsheetId)}:batchUpdate`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ values: [values] }),
+      body: JSON.stringify({
+        requests: [
+          {
+            appendCells: {
+              sheetId,
+              rows: [
+                {
+                  values: values.map((value, index) =>
+                    index === registrationHeaders.length - 1
+                      ? {
+                          userEnteredValue: {
+                            formulaValue: `=HYPERLINK("https://drive.google.com/drive/folders/${folderId}","Open documents")`,
+                          },
+                        }
+                      : { userEnteredValue: { stringValue: value } }
+                  ),
+                },
+              ],
+              fields: "userEnteredValue",
+            },
+          },
+        ],
+      }),
     },
     "sheets.googleapis.com"
   )
-  const result = (await response.json()) as {
-    updates?: { updatedRange?: string }
-  }
-  return { submissionId: values[0], row: result.updates?.updatedRange }
+  return { submissionId: values[0] }
 }
 
 async function verifyUploadedFile(fileId: string, folderId: string) {
   const response = await googleFetch(
-    `/drive/v3/files/${encodeURIComponent(fileId)}?fields=id%2Cname%2Cparents`
+    `/drive/v3/files/${encodeURIComponent(fileId)}?fields=id%2Cname%2Cparents&supportsAllDrives=true`
   )
   const file = (await response.json()) as {
     id?: string
@@ -690,7 +793,9 @@ async function submitRegistration(body: Record<string, unknown>) {
   if (config.isTestMode) {
     const testMessage = getText(body, "testMessage", 1000, true)
     const testFileId = getText(body, "testFileId", 256, true)
-    const testFile = await verifyUploadedFile(testFileId, config.folderId)
+    const folderId = getText(body, "folderId", 256, true)
+    const folder = await verifySubmissionFolder(folderId, config.folderId)
+    const testFile = await verifyUploadedFile(testFileId, folder.id)
     const now = new Date()
     const valuesByHeader: Record<string, string> = {
       "Submission ID": `TEST-${randomUUID()}`,
@@ -701,6 +806,7 @@ async function submitRegistration(body: Record<string, unknown>) {
       "CV Drive File ID": testFile.id ?? testFileId,
       "Privacy Consent": "TEST ACKNOWLEDGEMENT (FAKE DATA ONLY)",
       Signature: "TEST",
+      "Documents Folder Link": "",
       "Consent Date": [
         String(now.getUTCMonth() + 1).padStart(2, "0"),
         String(now.getUTCDate()).padStart(2, "0"),
@@ -709,16 +815,19 @@ async function submitRegistration(body: Record<string, unknown>) {
     }
     return appendRegistrationRow(
       registrationHeaders.map((header) => valuesByHeader[header] ?? ""),
-      config
+      config,
+      folder.id
     )
   }
 
   const fullName = getText(body, "fullName", 200, true)
   const personalEmail = getEmail(body, "personalEmail", true)
 
+  const folderId = getText(body, "folderId", 256, true)
+  const folder = await verifySubmissionFolder(folderId, config.folderId)
   const files = getFileIds(body)
   const uploadedFiles = await Promise.all(
-    Object.values(files).map((fileId) => verifyUploadedFile(fileId, config.folderId))
+    Object.values(files).map((fileId) => verifyUploadedFile(fileId, folder.id))
   )
   if (uploadedFiles.length !== 3) {
     throw new RequestError("All required documents must be uploaded.", 400)
@@ -794,14 +903,16 @@ async function submitRegistration(body: Record<string, unknown>) {
     config.isTestMode ? "TEST ACKNOWLEDGEMENT (FAKE DATA ONLY)" : "I agree",
     getText(body, "signature", 200, true),
     consentDate,
+    "",
   ]
 
-  return appendRegistrationRow(values, config)
+  return appendRegistrationRow(values, config, folder.id)
 }
 
 async function deleteUploadedFiles(body: Record<string, unknown>) {
   const config = getConfiguration()
   const ids = body.fileIds
+  const folderId = getText(body, "folderId", 256, true)
   if (
     !Array.isArray(ids) ||
     ids.length > 3 ||
@@ -810,13 +921,19 @@ async function deleteUploadedFiles(body: Record<string, unknown>) {
     throw new RequestError("The uploaded file list is invalid.", 400)
   }
 
+  const folder = await verifySubmissionFolder(folderId, config.folderId)
   for (const id of ids) {
-    const file = await verifyUploadedFile(id, config.folderId)
-    await googleFetch(`/drive/v3/files/${encodeURIComponent(file.id!)}`, {
-      method: "DELETE",
-    })
+    const file = await verifyUploadedFile(id, folder.id)
+    await googleFetch(
+      `/drive/v3/files/${encodeURIComponent(file.id!)}?supportsAllDrives=true`,
+      { method: "DELETE" }
+    )
   }
-  return { deleted: ids.length }
+  await googleFetch(
+    `/drive/v3/files/${encodeURIComponent(folder.id)}?supportsAllDrives=true`,
+    { method: "DELETE" }
+  )
+  return { deleted: ids.length, folderDeleted: true }
 }
 
 export default async function handler(
@@ -840,6 +957,10 @@ export default async function handler(
     switch (body.action) {
       case "verify-human":
         result = await verifyHuman(body, request, config, origin)
+        break
+      case "create-submission-folder":
+        requirePermit(body, config.permitSecret, origin)
+        result = await createSubmissionFolder()
         break
       case "start-upload":
         requirePermit(body, config.permitSecret, origin)
