@@ -1,4 +1,4 @@
-import { GoogleAuth } from "google-auth-library"
+import { OAuth2Client } from "google-auth-library"
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
@@ -68,8 +68,9 @@ class RequestError extends Error {
 }
 
 function getConfiguration() {
-  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
-  const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n")
+  const oauthClientId = process.env.GOOGLE_OAUTH_CLIENT_ID
+  const oauthClientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET
+  const oauthRefreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN
   const spreadsheetId =
     process.env.REGISTRATION_SHEET_ID || defaultSpreadsheetId
   const isTestMode = process.env.REGISTRATION_TEST_MODE === "true"
@@ -86,8 +87,9 @@ function getConfiguration() {
   const permitSecret = process.env.REGISTRATION_TOKEN_SECRET
 
   if (
-    !email ||
-    !privateKey ||
+    !oauthClientId ||
+    !oauthClientSecret ||
+    !oauthRefreshToken ||
     !spreadsheetId ||
     !folderId ||
     !allowedOrigin ||
@@ -102,8 +104,9 @@ function getConfiguration() {
   }
 
   return {
-    email,
-    privateKey,
+    oauthClientId,
+    oauthClientSecret,
+    oauthRefreshToken,
     spreadsheetId,
     folderId,
     tabName,
@@ -330,17 +333,11 @@ function getFileIds(body: Record<string, unknown>): Record<UploadKind, string> {
 }
 
 function getGoogleAuth() {
-  const { email, privateKey } = getConfiguration()
-  return new GoogleAuth({
-    credentials: {
-      client_email: email,
-      private_key: privateKey,
-    },
-    scopes: [
-      "https://www.googleapis.com/auth/drive",
-      "https://www.googleapis.com/auth/spreadsheets",
-    ],
-  })
+  const { oauthClientId, oauthClientSecret, oauthRefreshToken } =
+    getConfiguration()
+  const client = new OAuth2Client(oauthClientId, oauthClientSecret)
+  client.setCredentials({ refresh_token: oauthRefreshToken })
+  return client
 }
 
 async function googleFetch(
@@ -348,9 +345,8 @@ async function googleFetch(
   init: RequestInit = {},
   host = "www.googleapis.com"
 ): Promise<Response> {
-  const auth = await getGoogleAuth()
-  const client = await auth.getClient()
-  const token = await client.getAccessToken()
+  const auth = getGoogleAuth()
+  const token = await auth.getAccessToken()
   if (!token.token) {
     throw new RequestError("Could not authenticate with Google.", 502)
   }
@@ -364,7 +360,7 @@ async function googleFetch(
   })
   if (!response.ok) {
     throw new RequestError(
-      `Google rejected the request (HTTP ${response.status}). Check the service-account access and API setup.`,
+      `Google rejected the request (HTTP ${response.status}). Check OAuth account access and API setup.`,
       502
     )
   }
@@ -443,6 +439,54 @@ async function startUpload(body: Record<string, unknown>) {
   return { uploadUrl }
 }
 
+async function getDriveErrorReason(response: Response) {
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined
+    throw error
+  }
+  if (typeof payload !== "object" || payload === null || !("error" in payload)) {
+    return undefined
+  }
+
+  const googleError = payload.error
+  if (typeof googleError !== "object" || googleError === null) return undefined
+
+  const errors = "errors" in googleError ? googleError.errors : undefined
+  const reason = Array.isArray(errors)
+    ? errors.find(
+        (item) =>
+          typeof item === "object" &&
+          item !== null &&
+          "reason" in item &&
+          typeof item.reason === "string"
+      )?.reason
+    : undefined
+
+  return typeof reason === "string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(reason)
+    ? reason
+    : undefined
+}
+
+function getDriveErrorHint(reason: string | undefined) {
+  switch (reason) {
+    case "storageQuotaExceeded":
+      return " The authorized Google account may not have upload quota; try a Google Workspace Shared Drive."
+    case "insufficientFilePermissions":
+      return " Confirm the Google account authorized for OAuth has Editor access to the exact destination folder."
+    case "teamDriveMembershipRequired":
+      return " Add the OAuth-authorized Google account to the Shared Drive with a role that can add files."
+    case "accessNotConfigured":
+      return " Enable the Google Drive API in the OAuth client's Google Cloud project."
+    case "domainPolicy":
+      return " A Google Workspace policy may be blocking the upload; ask the Workspace administrator."
+    default:
+      return ""
+  }
+}
+
 async function uploadChunk(body: Record<string, unknown>) {
   const uploadUrl = getText(body, "uploadUrl", 2048, true)
   const mimeType = getText(body, "mimeType", 120, true)
@@ -491,9 +535,8 @@ async function uploadChunk(body: Record<string, unknown>) {
     throw new RequestError("The upload chunk size or offset is invalid.", 400)
   }
 
-  const auth = await getGoogleAuth()
-  const client = await auth.getClient()
-  const token = await client.getAccessToken()
+  const auth = getGoogleAuth()
+  const token = await auth.getAccessToken()
   if (!token.token) {
     throw new RequestError("Could not authenticate with Google.", 502)
   }
@@ -519,8 +562,9 @@ async function uploadChunk(body: Record<string, unknown>) {
     return { complete: false, uploadedBytes: Number(lastUploadedByte) + 1 }
   }
   if (!response.ok) {
+    const reason = await getDriveErrorReason(response)
     throw new RequestError(
-      `Google rejected the document upload (HTTP ${response.status}).`,
+      `Google rejected the document upload (HTTP ${response.status}${reason ? `, reason: ${reason}` : ""}).${getDriveErrorHint(reason)}`,
       502
     )
   }
@@ -594,6 +638,26 @@ async function ensureRegistrationTab() {
   return quotedTab
 }
 
+async function appendRegistrationRow(
+  values: string[],
+  config: ReturnType<typeof getConfiguration>
+) {
+  const quotedTab = await ensureRegistrationTab()
+  const response = await googleFetch(
+    `/v4/spreadsheets/${encodeURIComponent(config.spreadsheetId)}/values/${encodeURIComponent(`${quotedTab}!A:AJ`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: [values] }),
+    },
+    "sheets.googleapis.com"
+  )
+  const result = (await response.json()) as {
+    updates?: { updatedRange?: string }
+  }
+  return { submissionId: values[0], row: result.updates?.updatedRange }
+}
+
 async function verifyUploadedFile(fileId: string, folderId: string) {
   const response = await googleFetch(
     `/drive/v3/files/${encodeURIComponent(fileId)}?fields=id%2Cname%2Cparents`
@@ -623,18 +687,34 @@ async function submitRegistration(body: Record<string, unknown>) {
     )
   }
 
-  const fullName = getText(body, "fullName", 200, true)
-  const personalEmail = getEmail(body, "personalEmail", true)
-  if (
-    config.isTestMode &&
-    (!/^TEST\b/i.test(fullName) ||
-      !personalEmail.toLowerCase().endsWith(".invalid"))
-  ) {
-    throw new RequestError(
-      "Test mode accepts only a full name starting with TEST and an email ending in .invalid.",
-      400
+  if (config.isTestMode) {
+    const testMessage = getText(body, "testMessage", 1000, true)
+    const testFileId = getText(body, "testFileId", 256, true)
+    const testFile = await verifyUploadedFile(testFileId, config.folderId)
+    const now = new Date()
+    const valuesByHeader: Record<string, string> = {
+      "Submission ID": `TEST-${randomUUID()}`,
+      "Submitted At": now.toISOString(),
+      "Full Name": "TEST Communication Check",
+      "Personal Email": "test@registration.invalid",
+      Motivation: testMessage,
+      "CV Drive File ID": testFile.id ?? testFileId,
+      "Privacy Consent": "TEST ACKNOWLEDGEMENT (FAKE DATA ONLY)",
+      Signature: "TEST",
+      "Consent Date": [
+        String(now.getUTCMonth() + 1).padStart(2, "0"),
+        String(now.getUTCDate()).padStart(2, "0"),
+        now.getUTCFullYear(),
+      ].join("/"),
+    }
+    return appendRegistrationRow(
+      registrationHeaders.map((header) => valuesByHeader[header] ?? ""),
+      config
     )
   }
+
+  const fullName = getText(body, "fullName", 200, true)
+  const personalEmail = getEmail(body, "personalEmail", true)
 
   const files = getFileIds(body)
   const uploadedFiles = await Promise.all(
@@ -716,20 +796,7 @@ async function submitRegistration(body: Record<string, unknown>) {
     consentDate,
   ]
 
-  const quotedTab = await ensureRegistrationTab()
-  const response = await googleFetch(
-    `/v4/spreadsheets/${encodeURIComponent(config.spreadsheetId)}/values/${encodeURIComponent(`${quotedTab}!A:AJ`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ values: [values] }),
-    },
-    "sheets.googleapis.com"
-  )
-  const result = (await response.json()) as {
-    updates?: { updatedRange?: string }
-  }
-  return { submissionId: values[0], row: result.updates?.updatedRange }
+  return appendRegistrationRow(values, config)
 }
 
 async function deleteUploadedFiles(body: Record<string, unknown>) {
