@@ -75,13 +75,10 @@ Set these Vercel environment variables for the API:
 | `REGISTRATION_SHEET_ID` | ID of the private registration spreadsheet |
 | `REGISTRATION_DRIVE_FOLDER_ID` | ID of its restricted uploads folder |
 | `REGISTRATION_SHEET_TAB` | Optional tab name; defaults to `Applications` |
-| `REGISTRATION_TEST_SHEET_TAB` | Optional test tab name; defaults to `Applications_Test` |
-| `REGISTRATION_TEST_DRIVE_FOLDER_ID` | Optional separate folder for test uploads |
 | `REGISTRATION_ALLOWED_ORIGIN` | Exact website origin, e.g. `https://example.org` |
 | `REGISTRATION_TOKEN_SECRET` | Random secret of at least 32 characters |
-| `REGISTRATION_ENABLED` | Set to `true` only when submissions are approved |
-| `REGISTRATION_PRIVACY_NOTICE_APPROVED` | Set to `true` only after the actual notice is approved |
-| `REGISTRATION_TEST_MODE` | Set to `true` temporarily to test with fake data |
+| `REGISTRATION_ENABLED` | Defaults to enabled; set to `false` to suspend submissions |
+| `REGISTRATION_PRIVACY_NOTICE_APPROVED` | Defaults to enabled; set to `false` to suspend submissions |
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret key |
 
 Generate `REGISTRATION_TOKEN_SECRET` locally with
@@ -94,39 +91,31 @@ Google may expire refresh tokens after seven days. For a persistent deployment,
 publish the consent screen and complete any verification Google requires for
 the Drive and Sheets scopes.
 
-For a live production launch, set `VITE_REGISTRATION_ENABLED=true` and
-`VITE_PRIVACY_NOTICE_URL` to the approved HTTPS privacy notice, and
-`VITE_TURNSTILE_SITE_KEY` to the public site key for a Turnstile widget
-configured for the production hostname. Set `VITE_PRIVACY_NOTICE_APPROVED=true`
-only after the actual notice is approved. These `VITE_` values are public;
-never put credentials in them. The form remains disabled by default. The browser
-uploads documents in 1 MB chunks so each request stays within Vercel's
-request-size limit; each file is limited to 10 MB.
+The form is enabled by default when `VITE_TURNSTILE_SITE_KEY` is configured.
+Set `VITE_REGISTRATION_ENABLED=false` or
+`VITE_PRIVACY_NOTICE_APPROVED=false` to suspend it. The attached notice is
+served from `public/data-privacy-consent-notice.pdf`. These `VITE_` values are
+public; never put credentials in them. The browser uploads documents in 1 MB
+chunks so each request stays within Vercel's request-size limit; each file is
+limited to 10 MB.
 
-For a controlled spreadsheet test, set both `REGISTRATION_TEST_MODE=true` and
-`VITE_REGISTRATION_TEST_MODE=true`, then redeploy. Test mode displays the full
-registration questionnaire, test acknowledgement, and a single dummy PDF
-upload. Use only fake data, a name beginning with `TEST`, and an email ending
-in `.invalid`. It appends the answers to the separate `Applications_Test` tab,
-uploads the PDF with a `TEST-` filename prefix into its own restricted child
-folder, and saves the file ID and clickable folder link in the test row. Set
-`REGISTRATION_TEST_DRIVE_FOLDER_ID` to use a separate test parent folder;
-otherwise, the configured registration folder is used. Keep
-`REGISTRATION_ENABLED` and both notice-approval flags unset. Turnstile and the
-Google OAuth variables are still required. Remove test rows and files when
-finished, then turn off both test-mode variables.
+Registration writes directly to the configured production spreadsheet tab
+and Drive folder. There is no test-mode submission path; remove any old
+`REGISTRATION_TEST_MODE`, `VITE_REGISTRATION_TEST_MODE`,
+`REGISTRATION_TEST_SHEET_TAB`, or `REGISTRATION_TEST_DRIVE_FOLDER_ID`
+variables from Vercel. The API is enabled by default when its required
+credentials and Turnstile configuration are present. Set
+`REGISTRATION_ENABLED=false` or
+`REGISTRATION_PRIVACY_NOTICE_APPROVED=false` on the server to suspend
+submissions. Turnstile and Google OAuth must be configured.
 
 Do not enable submissions until the privacy notice and consent language are
 approved, the production origin and credentials are configured, and the
-Turnstile widget is configured. Test the submission flow with non-sensitive
-sample data before opening applications. Ensure the approved notice explains
+Turnstile widget is configured. Ensure the approved notice explains
 the collection and handling of applicant information, Google Drive/Sheets
 storage, and the Cloudflare Turnstile check.
 
-The registration page's current sample privacy notice is for layout review and
-test mode only. It is not approval to collect real applicant information. Both
-server and website approval flags must remain unset until the organization
-replaces it with its approved notice.
+The registration page links to the supplied privacy notice PDF.
 
 ## Facebook embed
 

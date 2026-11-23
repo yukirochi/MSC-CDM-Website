@@ -13,6 +13,8 @@ const uploadChunkBytes = 1024 * 1024
 const defaultSpreadsheetId =
   "1-BQh1Lewx_OCfSyRxQXOTIpQSMhxC8_Nc3acUmWrtPQ"
 const defaultDriveFolderId = "1ow1m3sImzblmsmFCEbOH72jLRzapDo-X"
+const applicantDeclaration =
+  "I have read, understood, and agree to the terms of this Data Privacy Consent Notice, and I hereby give my consent to Microsoft Student Community – Colegio de Montalban to collect, process, and store my personal information and supporting documents in accordance with Republic Act No. 10173."
 
 const registrationHeaders = [
   "Submission ID",
@@ -74,15 +76,9 @@ function getConfiguration() {
   const oauthRefreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN
   const spreadsheetId =
     process.env.REGISTRATION_SHEET_ID || defaultSpreadsheetId
-  const isTestMode = process.env.REGISTRATION_TEST_MODE === "true"
-  const folderId = isTestMode
-    ? process.env.REGISTRATION_TEST_DRIVE_FOLDER_ID ||
-      process.env.REGISTRATION_DRIVE_FOLDER_ID ||
-      defaultDriveFolderId
-    : process.env.REGISTRATION_DRIVE_FOLDER_ID || defaultDriveFolderId
-  const tabName = isTestMode
-    ? process.env.REGISTRATION_TEST_SHEET_TAB || "Applications_Test"
-    : process.env.REGISTRATION_SHEET_TAB || "Applications"
+  const folderId =
+    process.env.REGISTRATION_DRIVE_FOLDER_ID || defaultDriveFolderId
+  const tabName = process.env.REGISTRATION_SHEET_TAB || "Applications"
   const allowedOrigin = process.env.REGISTRATION_ALLOWED_ORIGIN
   const turnstileSecret = process.env.TURNSTILE_SECRET_KEY
   const permitSecret = process.env.REGISTRATION_TOKEN_SECRET
@@ -111,7 +107,6 @@ function getConfiguration() {
     spreadsheetId,
     folderId,
     tabName,
-    isTestMode,
     allowedOrigin,
     turnstileSecret,
     permitSecret,
@@ -119,10 +114,9 @@ function getConfiguration() {
 }
 
 function requireRegistrationEnabled() {
-  if (process.env.REGISTRATION_TEST_MODE === "true") return
   if (
-    process.env.REGISTRATION_ENABLED !== "true" ||
-    process.env.REGISTRATION_PRIVACY_NOTICE_APPROVED !== "true"
+    process.env.REGISTRATION_ENABLED === "false" ||
+    process.env.REGISTRATION_PRIVACY_NOTICE_APPROVED === "false"
   ) {
     throw new RequestError("Registration submissions are not open.", 503)
   }
@@ -477,7 +471,7 @@ async function startUpload(body: Record<string, unknown>) {
         "X-Upload-Content-Length": String(size),
       },
       body: JSON.stringify({
-        name: `${config.isTestMode ? "TEST-" : ""}${name.replace(/[\r\n]/g, "_")}`,
+        name: name.replace(/[\r\n]/g, "_"),
         mimeType,
         parents: [submissionFolder.id],
       }),
@@ -506,7 +500,7 @@ async function createSubmissionFolder() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: `${config.isTestMode ? "TEST-" : ""}Application-${randomUUID()}`,
+        name: `Application-${randomUUID()}`,
         mimeType: "application/vnd.google-apps.folder",
         parents: [config.folderId],
       }),
@@ -873,45 +867,25 @@ async function verifyUploadedFile(fileId: string, folderId: string) {
 
 async function submitRegistration(body: Record<string, unknown>) {
   const config = getConfiguration()
-  if (body.testMode !== config.isTestMode) {
-    throw new RequestError("The registration mode does not match the server.", 400)
-  }
   if (body.privacyConsent !== true) {
-    throw new RequestError(
-      config.isTestMode
-        ? "Test acknowledgement is required."
-        : "Privacy consent is required.",
-      400
-    )
+    throw new RequestError("Privacy consent is required.", 400)
   }
 
   const fullName = getText(body, "fullName", 200, true)
   const personalEmail = getEmail(body, "personalEmail", true)
-  if (
-    config.isTestMode &&
-    (!/^TEST\b/i.test(fullName) ||
-      !personalEmail.toLowerCase().endsWith(".invalid"))
-  ) {
-    throw new RequestError(
-      "Test mode accepts only a full name starting with TEST and an email ending in .invalid.",
-      400
-    )
+  const studentId = getText(body, "studentId", 8, true)
+  if (!/^\d{2}-\d{5}$/.test(studentId)) {
+    throw new RequestError("The studentId field must match the format 00-00000.", 400)
   }
 
   const folderId = getText(body, "folderId", 256, true)
   const folder = await verifySubmissionFolder(folderId, config.folderId)
-  const files = config.isTestMode
-    ? {
-        cv: getText(body, "testFileId", 256, true),
-        ovrf: "",
-        letter: "",
-      }
-    : getFileIds(body)
-  const fileIds = Object.values(files).filter((fileId) => fileId !== "")
+  const files = getFileIds(body)
+  const fileIds = Object.values(files)
   const uploadedFiles = await Promise.all(
     fileIds.map((fileId) => verifyUploadedFile(fileId, folder.id))
   )
-  if (uploadedFiles.length !== (config.isTestMode ? 1 : 3)) {
+  if (uploadedFiles.length !== 3) {
     throw new RequestError("All required documents must be uploaded.", 400)
   }
 
@@ -925,21 +899,12 @@ async function submitRegistration(body: Record<string, unknown>) {
   ) {
     throw new RequestError("The dateOfBirth field is invalid.", 400)
   }
-  const consentDate = getText(body, "consentDate", 30, true)
-  const consentDateMatch = consentDate.match(
-    /^(0[1-9]|1[0-2])\/(0[1-9]|[12][0-9]|3[01])\/([0-9]{4})$/
-  )
-  if (
-    !consentDateMatch ||
-    new Date(
-      `${consentDateMatch[3]}-${consentDateMatch[1]}-${consentDateMatch[2]}T00:00:00.000Z`
-    )
-      .toISOString()
-      .slice(0, 10) !==
-      `${consentDateMatch[3]}-${consentDateMatch[1]}-${consentDateMatch[2]}`
-  ) {
-    throw new RequestError("The consentDate field is invalid.", 400)
-  }
+  const consentDate = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  }).format(new Date())
   const graduationYear = getText(body, "graduationYear", 10, true)
   if (
     !/^\d{4}$/.test(graduationYear) ||
@@ -949,7 +914,7 @@ async function submitRegistration(body: Record<string, unknown>) {
   }
 
   const values = [
-    `${config.isTestMode ? "TEST-" : ""}${randomUUID()}`,
+    randomUUID(),
     new Date().toISOString(),
     fullName,
     getText(body, "preferredName", 120),
@@ -960,9 +925,9 @@ async function submitRegistration(body: Record<string, unknown>) {
     getText(body, "homeAddress", 1000, true),
     dateOfBirth,
     getText(body, "emergencyContact", 100),
-    getText(body, "studentId", 100, true),
+    studentId,
     getText(body, "program", 120, true),
-    getText(body, "yearLevel", 40),
+    getText(body, "yearLevel", 40, true),
     getText(body, "section", 80, true),
     getText(body, "sectionOther", 100),
     graduationYear,
@@ -982,7 +947,7 @@ async function submitRegistration(body: Record<string, unknown>) {
     files.cv,
     files.ovrf,
     files.letter,
-    config.isTestMode ? "TEST ACKNOWLEDGEMENT (FAKE DATA ONLY)" : "I agree",
+    applicantDeclaration,
     getText(body, "signature", 200, true),
     consentDate,
     "",
