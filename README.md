@@ -104,12 +104,13 @@ uploads documents in 1 MB chunks so each request stays within Vercel's
 request-size limit; each file is limited to 10 MB.
 
 For a controlled spreadsheet test, set both `REGISTRATION_TEST_MODE=true` and
-`VITE_REGISTRATION_TEST_MODE=true`, then redeploy. The test page asks for one
-message, a test acknowledgement, and one dummy PDF. It appends a synthetic row
-to the separate `Applications_Test` tab, saves the message in the `Motivation`
-column, uploads the PDF with a `TEST-` filename prefix into its own restricted
-child folder, and saves the file ID and clickable folder link in the test row.
-Set `REGISTRATION_TEST_DRIVE_FOLDER_ID` to use a separate test parent folder;
+`VITE_REGISTRATION_TEST_MODE=true`, then redeploy. Test mode displays the full
+registration questionnaire, test acknowledgement, and a single dummy PDF
+upload. Use only fake data, a name beginning with `TEST`, and an email ending
+in `.invalid`. It appends the answers to the separate `Applications_Test` tab,
+uploads the PDF with a `TEST-` filename prefix into its own restricted child
+folder, and saves the file ID and clickable folder link in the test row. Set
+`REGISTRATION_TEST_DRIVE_FOLDER_ID` to use a separate test parent folder;
 otherwise, the configured registration folder is used. Keep
 `REGISTRATION_ENABLED` and both notice-approval flags unset. Turnstile and the
 Google OAuth variables are still required. Remove test rows and files when

@@ -508,28 +508,12 @@ function JoinCommunityPage() {
 
     const form = event.currentTarget
     const formData = new FormData(form)
-    if (isTestMode) {
-      if (!formData.get("testMessage")?.toString().trim()) {
-        setSubmissionError("Enter a test message.")
+    for (let step = 0; step < applicationSteps.length; step += 1) {
+      const invalidControl = validateStep(step)
+      if (invalidControl) {
+        moveToStep(step)
+        window.setTimeout(() => invalidControl.reportValidity(), 0)
         return
-      }
-      if (formData.get("privacyConsent") !== "Test acknowledgement") {
-        setSubmissionError("Check the test acknowledgement before submitting.")
-        return
-      }
-      const testDocument = formData.get("testDocument")
-      if (!(testDocument instanceof File) || testDocument.size === 0) {
-        setSubmissionError("Choose a dummy PDF document to test the Drive upload.")
-        return
-      }
-    } else {
-      for (let step = 0; step < applicationSteps.length; step += 1) {
-        const invalidControl = validateStep(step)
-        if (invalidControl) {
-          moveToStep(step)
-          window.setTimeout(() => invalidControl.reportValidity(), 0)
-          return
-        }
       }
     }
 
@@ -549,51 +533,21 @@ function JoinCommunityPage() {
       setUploadStatus("Creating a private application folder...")
       submissionFolderId = await createSubmissionFolder(permit)
 
-      if (isTestMode) {
-        const testDocument = formData.get("testDocument")
-        if (!(testDocument instanceof File) || testDocument.size === 0) {
-          throw new Error("Choose a dummy PDF document to test the Drive upload.")
-        }
-        setUploadStatus(`Uploading ${testDocument.name}...`)
-        const testFileId = await uploadFile(
-          testDocument,
-          "cv",
-          permit,
-          submissionFolderId
-        )
-        uploadedFileIds.push(testFileId)
-        setUploadStatus("Saving test message...")
-        const result = await postRegistrationRequest(
-          {
-            action: "submit",
-            testMode: true,
-            testMessage: formData.get("testMessage")?.toString() ?? "",
-            testFileId,
-            folderId: submissionFolderId,
-            privacyConsent: true,
-          },
-          permit
-        )
-        setSubmissionSuccess(true)
-        setUploadStatus("")
-        form.reset()
-        setFileErrors({})
-        if (typeof result.submissionId !== "string") {
-          setSubmissionError(
-            "The test message and document were saved, but their confirmation could not be displayed."
-          )
-        }
-        return
-      }
-
-      const fileEntries: Array<[UploadKey, FormDataEntryValue | null]> = [
-        ["cv", formData.get("cv")],
-        ["ovrf", formData.get("ovrf")],
-        ["letter", formData.get("letterOfIntent")],
-      ]
+      const fileEntries: Array<[UploadKey, FormDataEntryValue | null]> =
+        isTestMode
+          ? [["cv", formData.get("testDocument")]]
+          : [
+              ["cv", formData.get("cv")],
+              ["ovrf", formData.get("ovrf")],
+              ["letter", formData.get("letterOfIntent")],
+            ]
       const files = fileEntries.map(([kind, value]) => {
         if (!(value instanceof File) || value.size === 0) {
-          throw new Error(`Choose the required ${kind} document.`)
+          throw new Error(
+            isTestMode
+              ? "Choose a dummy PDF document to test the Drive upload."
+              : `Choose the required ${kind} document.`
+          )
         }
         return [kind, value] as const
       })
@@ -610,7 +564,9 @@ function JoinCommunityPage() {
         fileIds[kind] = fileId
       }
 
-      setUploadStatus("Saving your application...")
+      setUploadStatus(
+        isTestMode ? "Saving test application..." : "Saving your application..."
+      )
       const textValue = (name: string) => formData.get(name)?.toString() ?? ""
       const listValue = (name: string) =>
         formData.getAll(name).map((value) => value.toString())
@@ -645,6 +601,7 @@ function JoinCommunityPage() {
         availability: listValue("availability"),
         membershipAgreements: listValue("membershipAgreements"),
         folderId: submissionFolderId,
+        testFileId: isTestMode ? fileIds.cv : "",
         privacyConsent: textValue("privacyConsent") !== "",
         testMode: isTestMode,
         signature: textValue("signature"),
@@ -713,166 +670,6 @@ function JoinCommunityPage() {
     .trim()
     .split(/[.!?]+/)
     .filter((sentence) => sentence.trim()).length
-
-  if (isTestMode) {
-    return (
-      <PageShell
-        eyebrow="Registration"
-        title="Test registration connection"
-        description="Send a synthetic test row and dummy PDF to the test spreadsheet and Drive folder."
-        icon={UsersRound}
-        bannerTheme="brand-light"
-        bannerLogo={logo}
-      >
-        <div className="mx-auto max-w-2xl space-y-6">
-          <Card
-            role="status"
-            className="gap-3 border-amber-300/70 bg-amber-50/70 py-4 text-amber-950 shadow-none"
-          >
-            <CardContent className="flex items-start gap-3 px-5">
-              <LockKeyhole aria-hidden="true" className="mt-0.5 size-5 shrink-0" />
-              <div>
-                <CardTitle className="text-sm">
-                  TEST MODE — fake data only
-                </CardTitle>
-                <CardDescription className="mt-1 leading-5 text-amber-900">
-                  This sends a synthetic entry to the Applications_Test tab
-                  and uploads one PDF prefixed TEST- to the configured test
-                  Drive folder. Do not select real documents.
-                </CardDescription>
-              </div>
-            </CardContent>
-          </Card>
-
-          <form className="space-y-5" noValidate onSubmit={handleSubmit}>
-            {submissionError && (
-              <p
-                role="alert"
-                className="rounded-md border border-destructive/40 p-3 text-sm text-destructive"
-              >
-                {submissionError}
-              </p>
-            )}
-            {submissionSuccess && (
-              <p
-                role="status"
-                className="rounded-md border border-green-300 bg-green-50 p-3 text-sm text-green-900"
-              >
-                Test message recorded and PDF uploaded to Drive.
-              </p>
-            )}
-            {uploadStatus && (
-              <p role="status" className="text-sm text-muted-foreground">
-                {uploadStatus}
-              </p>
-            )}
-
-            <Field
-              id="testMessage"
-              label="What message should be written to the test row?"
-              required
-              hint="This text is saved in the Motivation column. Keep it synthetic."
-            >
-              <Textarea
-                id="testMessage"
-                name="testMessage"
-                required
-                maxLength={1000}
-                placeholder="TEST — checking spreadsheet connection"
-              />
-            </Field>
-
-            <Field
-              id="testDocument"
-              label="Dummy PDF for Drive upload test"
-              required
-              hint="Choose a non-sensitive sample PDF, up to 10 MB. It will be prefixed TEST- in Drive."
-            >
-              <Input
-                id="testDocument"
-                name="testDocument"
-                type="file"
-                accept=".pdf,application/pdf"
-                required
-                className="h-auto cursor-pointer py-2 file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1 file:text-primary-foreground"
-                onChange={(event) =>
-                  validateUpload(
-                    "cv",
-                    (file) =>
-                      file.type === "application/pdf" ||
-                      file.name.toLowerCase().endsWith(".pdf"),
-                    "a PDF file"
-                  )(event)
-                }
-              />
-              {fileErrors.cv && (
-                <p role="alert" className="text-sm text-destructive">
-                  {fileErrors.cv}
-                </p>
-              )}
-            </Field>
-
-            <label
-              htmlFor="privacyConsent"
-              className={`flex items-start gap-3 rounded-lg border border-border p-3 ${
-                registrationOpen
-                  ? "cursor-pointer"
-                  : "cursor-not-allowed opacity-60"
-              }`}
-            >
-              <input
-                id="privacyConsent"
-                type="checkbox"
-                name="privacyConsent"
-                value="Test acknowledgement"
-                required
-                disabled={!registrationOpen}
-                className="mt-0.5 size-4 shrink-0 accent-primary"
-              />
-              <span className="text-sm leading-5">
-                I understand this sends a fake test entry only.
-              </span>
-            </label>
-
-            {registrationOpen && turnstileSiteKey && (
-              <div>
-                <p className="mb-2 text-sm text-muted-foreground">
-                  Complete the security check before sending.
-                </p>
-                <Turnstile
-                  key={turnstileWidgetKey}
-                  siteKey={turnstileSiteKey}
-                  options={{ action: "registration" }}
-                  onSuccess={(token) => {
-                    setTurnstileToken(token)
-                    setSubmissionError("")
-                  }}
-                  onExpire={() => setTurnstileToken("")}
-                  onError={() => {
-                    setTurnstileToken("")
-                    setSubmissionError(
-                      "The security check could not load. Try again."
-                    )
-                  }}
-                />
-              </div>
-            )}
-
-            <Button
-              type="submit"
-              disabled={!registrationOpen || isSubmitting || !turnstileToken}
-            >
-              {isSubmitting
-                ? "Sending test entry..."
-                : turnstileToken
-                  ? "Send test entry"
-                  : "Complete security check"}
-            </Button>
-          </form>
-        </div>
-      </PageShell>
-    )
-  }
 
   return (
     <PageShell
@@ -1299,8 +1096,45 @@ function JoinCommunityPage() {
           <SectionCard
             number={7}
             title="Document Requirements"
-            description="All three documents are required. Each upload must be one file no larger than 10 MB."
+            description={
+              isTestMode
+                ? "Choose one dummy PDF to test the Drive upload. Do not use real applicant documents."
+                : "All three documents are required. Each upload must be one file no larger than 10 MB."
+            }
           >
+            {isTestMode && (
+              <Field
+                id="testDocument"
+                label="Dummy PDF for Drive upload test"
+                required
+                hint="Choose a non-sensitive sample PDF, up to 10 MB."
+              >
+                <Input
+                  id="testDocument"
+                  name="testDocument"
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  required
+                  className="h-auto cursor-pointer py-2 file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1 file:text-primary-foreground"
+                  onChange={(event) =>
+                    validateUpload(
+                      "cv",
+                      (file) =>
+                        file.type === "application/pdf" ||
+                        file.name.toLowerCase().endsWith(".pdf"),
+                      "a PDF file"
+                    )(event)
+                  }
+                />
+                {fileErrors.cv && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {fileErrors.cv}
+                  </p>
+                )}
+              </Field>
+            )}
+            {!isTestMode && (
+              <>
             <Field
               id="cv"
               label="Curriculum Vitae (CV)"
@@ -1414,6 +1248,8 @@ function JoinCommunityPage() {
                 </p>
               )}
             </Field>
+              </>
+            )}
           </SectionCard>
           <StepNavigation
             step={5}

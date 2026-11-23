@@ -885,46 +885,33 @@ async function submitRegistration(body: Record<string, unknown>) {
     )
   }
 
-  if (config.isTestMode) {
-    const testMessage = getText(body, "testMessage", 1000, true)
-    const testFileId = getText(body, "testFileId", 256, true)
-    const folderId = getText(body, "folderId", 256, true)
-    const folder = await verifySubmissionFolder(folderId, config.folderId)
-    const testFile = await verifyUploadedFile(testFileId, folder.id)
-    const now = new Date()
-    const valuesByHeader: Record<string, string> = {
-      "Submission ID": `TEST-${randomUUID()}`,
-      "Submitted At": now.toISOString(),
-      "Full Name": "TEST Communication Check",
-      "Personal Email": "test@registration.invalid",
-      Motivation: testMessage,
-      "CV Drive File ID": testFile.id ?? testFileId,
-      "Privacy Consent": "TEST ACKNOWLEDGEMENT (FAKE DATA ONLY)",
-      Signature: "TEST",
-      "Documents Folder Link": "",
-      "Consent Date": [
-        String(now.getUTCMonth() + 1).padStart(2, "0"),
-        String(now.getUTCDate()).padStart(2, "0"),
-        now.getUTCFullYear(),
-      ].join("/"),
-    }
-    return appendRegistrationRow(
-      registrationHeaders.map((header) => valuesByHeader[header] ?? ""),
-      config,
-      folder.id
+  const fullName = getText(body, "fullName", 200, true)
+  const personalEmail = getEmail(body, "personalEmail", true)
+  if (
+    config.isTestMode &&
+    (!/^TEST\b/i.test(fullName) ||
+      !personalEmail.toLowerCase().endsWith(".invalid"))
+  ) {
+    throw new RequestError(
+      "Test mode accepts only a full name starting with TEST and an email ending in .invalid.",
+      400
     )
   }
 
-  const fullName = getText(body, "fullName", 200, true)
-  const personalEmail = getEmail(body, "personalEmail", true)
-
   const folderId = getText(body, "folderId", 256, true)
   const folder = await verifySubmissionFolder(folderId, config.folderId)
-  const files = getFileIds(body)
+  const files = config.isTestMode
+    ? {
+        cv: getText(body, "testFileId", 256, true),
+        ovrf: "",
+        letter: "",
+      }
+    : getFileIds(body)
+  const fileIds = Object.values(files).filter((fileId) => fileId !== "")
   const uploadedFiles = await Promise.all(
-    Object.values(files).map((fileId) => verifyUploadedFile(fileId, folder.id))
+    fileIds.map((fileId) => verifyUploadedFile(fileId, folder.id))
   )
-  if (uploadedFiles.length !== 3) {
+  if (uploadedFiles.length !== (config.isTestMode ? 1 : 3)) {
     throw new RequestError("All required documents must be uploaded.", 400)
   }
 
