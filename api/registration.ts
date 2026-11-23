@@ -341,6 +341,59 @@ function getGoogleAuth() {
   return client
 }
 
+function getRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+function getSafeGoogleErrorField(value: unknown) {
+  return typeof value === "string" &&
+    /^[A-Za-z0-9_.\x5B\x5D]{1,160}$/.test(value)
+    ? value
+    : undefined
+}
+
+async function getGoogleErrorDetails(response: Response) {
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch (error) {
+    if (error instanceof SyntaxError) return []
+    throw error
+  }
+  const googleError = getRecord(getRecord(payload)?.error)
+  if (!googleError) return []
+
+  const details: string[] = []
+  const status = getSafeGoogleErrorField(googleError.status)
+  if (status) details.push(status)
+
+  if (Array.isArray(googleError.errors)) {
+    const reason = googleError.errors
+      .map((item) => getRecord(item)?.reason)
+      .map(getSafeGoogleErrorField)
+      .find((value) => value !== undefined)
+    if (reason) details.push(`reason: ${reason}`)
+  }
+
+  if (Array.isArray(googleError.details)) {
+    for (const detail of googleError.details) {
+      const violations = getRecord(detail)?.fieldViolations
+      if (!Array.isArray(violations)) continue
+      const field = violations
+        .map((violation) => getRecord(violation)?.field)
+        .map(getSafeGoogleErrorField)
+        .find((value) => value !== undefined)
+      if (field) {
+        details.push(`field: ${field}`)
+        break
+      }
+    }
+  }
+  return details
+}
+
 async function googleFetch(
   path: string,
   init: RequestInit = {},
@@ -360,8 +413,11 @@ async function googleFetch(
     },
   })
   if (!response.ok) {
+    const details = await getGoogleErrorDetails(response)
+    const serviceName =
+      host === "sheets.googleapis.com" ? "Google Sheets" : "Google Drive"
     throw new RequestError(
-      `Google rejected the request (HTTP ${response.status}). Check OAuth account access and API setup.`,
+      `${serviceName} rejected the request (HTTP ${response.status}${details.length ? `; ${details.join("; ")}` : ""}). Check the request details and OAuth account access.`,
       502
     )
   }
@@ -631,12 +687,18 @@ function escapeSheetName(name: string) {
 async function ensureRegistrationTab() {
   const { spreadsheetId, tabName } = getConfiguration()
   let spreadsheet = await googleFetch(
-    `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle)`,
+    `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle%2CgridProperties(columnCount))`,
     {},
     "sheets.googleapis.com"
   )
   let metadata = (await spreadsheet.json()) as {
-    sheets?: Array<{ properties?: { title?: string; sheetId?: number } }>
+    sheets?: Array<{
+      properties?: {
+        title?: string
+        sheetId?: number
+        gridProperties?: { columnCount?: number }
+      }
+    }>
   }
   const hasTab = metadata.sheets?.some(
     (sheet) => sheet.properties?.title === tabName
@@ -655,20 +717,53 @@ async function ensureRegistrationTab() {
       "sheets.googleapis.com"
     )
     spreadsheet = await googleFetch(
-      `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle)`,
+      `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties(sheetId%2Ctitle%2CgridProperties(columnCount))`,
       {},
       "sheets.googleapis.com"
     )
     metadata = (await spreadsheet.json()) as {
-      sheets?: Array<{ properties?: { title?: string; sheetId?: number } }>
+      sheets?: Array<{
+        properties?: {
+          title?: string
+          sheetId?: number
+          gridProperties?: { columnCount?: number }
+        }
+      }>
     }
   }
 
-  const sheetId = metadata.sheets?.find(
+  const sheetProperties = metadata.sheets?.find(
     (sheet) => sheet.properties?.title === tabName
-  )?.properties?.sheetId
+  )?.properties
+  const sheetId = sheetProperties?.sheetId
   if (typeof sheetId !== "number") {
     throw new RequestError("Google did not return the registration tab ID.", 502)
+  }
+  if (
+    typeof sheetProperties.gridProperties?.columnCount === "number" &&
+    sheetProperties.gridProperties.columnCount < registrationHeaders.length
+  ) {
+    await googleFetch(
+      `/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests: [
+            {
+              updateSheetProperties: {
+                properties: {
+                  sheetId,
+                  gridProperties: { columnCount: registrationHeaders.length },
+                },
+                fields: "gridProperties.columnCount",
+              },
+            },
+          ],
+        }),
+      },
+      "sheets.googleapis.com"
+    )
   }
 
   const quotedTab = escapeSheetName(tabName)
